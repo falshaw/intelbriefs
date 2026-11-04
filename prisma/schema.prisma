@@ -1,0 +1,366 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// =============================================================================
+// Auth Models
+// =============================================================================
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  passwordHash  String?
+  name          String?
+  image         String?
+  role          String    @default("USER")
+  isActive      Boolean   @default(true)
+  emailVerified DateTime?
+  lastLoginAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts   Account[]
+  sessions   Session[]
+  briefs         Brief[]
+  activities     Activity[]
+  watchlistItems WatchlistItem[]
+  auditLogs  AuditLog[]
+  settings   AppSettings?
+  competitors    Competitor[]
+  briefTemplates BriefTemplate[]
+  sourceScores   SourceScore[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// =============================================================================
+// IntelBrief Models
+// =============================================================================
+
+model Brief {
+  id            String      @id @default(cuid())
+  type          BriefType
+  mode          BriefMode
+  status        BriefStatus @default(PENDING)
+  name          String
+  company       String?
+  linkedinUrl   String?
+  context       String?     // User-provided context (e.g. "meeting tomorrow", "interview")
+  webFindings   Json?
+  crmFindings   Json?
+  localFindings Json?
+  summary       String?
+  talkingPoints String[]
+  riskSignals   String[]
+  strategy      String?
+  crmContactId    String?
+  crmSynced       Boolean     @default(false)
+  sourceContactId String?     @map("source_contact_id")  // CRM contact that triggered enrichment
+  userId          String
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sources       Source[]
+  watchlistRuns WatchlistRun[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([name])
+  @@index([sourceContactId])
+}
+
+model Source {
+  id               String     @id @default(cuid())
+  briefId          String
+  type             SourceType
+  url              String?
+  title            String
+  snippet          String?
+  raw              Json?
+  credibilityScore Float?     // 0.0-1.0 confidence score from source quality system
+
+  brief Brief @relation(fields: [briefId], references: [id], onDelete: Cascade)
+
+  @@index([briefId])
+}
+
+model Activity {
+  id          String   @id @default(cuid())
+  type        String
+  description String
+  entityType  String
+  entityId    String?
+  entityName  String?
+  userId      String
+  createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String
+  action     String   // e.g. "brief.create", "brief.delete", "brief.crm_sync"
+  resource   String   // e.g. "brief", "settings"
+  resourceId String?
+  metadata   Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@index([resource, resourceId])
+}
+
+model AppSettings {
+  id               String   @id @default(cuid())
+  userId           String   @unique
+  tavilyApiKey     String?
+  exaApiKey         String?
+  crmUrl           String?
+  crmAuthToken     String?
+  backgroundProfile    String?  // User background for AI context
+  defaultMode          BriefMode @default(QUICK)
+  autoEnrichEnabled    Boolean   @default(false) @map("auto_enrich_enabled")
+  autoEnrichMode       String    @default("QUICK") @map("auto_enrich_mode")  // QUICK or DEEP
+  localScanPaths       String[]
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// =============================================================================
+// Enums
+// =============================================================================
+
+enum BriefType {
+  PERSON
+  COMPANY
+}
+
+enum BriefMode {
+  QUICK
+  DEEP
+}
+
+enum BriefStatus {
+  PENDING
+  RESEARCHING
+  SYNTHESIZING
+  COMPLETE
+  FAILED
+}
+
+enum SourceType {
+  WEB
+  CRM
+  LOCAL_FILE
+  LINKEDIN
+}
+
+// =============================================================================
+// Watchlist (IB-01: Recurring Briefs)
+// =============================================================================
+
+model WatchlistItem {
+  id          String         @id @default(cuid())
+  userId      String
+  name        String         // Person or company name
+  company     String?
+  linkedinUrl String?
+  briefType   BriefType      @default(PERSON)
+  briefMode   BriefMode      @default(DEEP)
+  frequency   WatchFrequency @default(WEEKLY)
+  isActive    Boolean        @default(true)
+  lastRunAt   DateTime?
+  nextRunAt   DateTime
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  user User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  runs WatchlistRun[]
+
+  @@index([userId])
+  @@index([nextRunAt])
+  @@index([isActive])
+}
+
+model WatchlistRun {
+  id              String   @id @default(cuid())
+  watchlistItemId String
+  briefId         String
+  changedFields   String[] // Which sections changed: ["summary", "riskSignals", "talkingPoints"]
+  previousSummary String?  // Prior summary for delta display
+  createdAt       DateTime @default(now())
+
+  watchlistItem WatchlistItem @relation(fields: [watchlistItemId], references: [id], onDelete: Cascade)
+  brief         Brief         @relation(fields: [briefId], references: [id], onDelete: Cascade)
+
+  @@index([watchlistItemId])
+  @@index([briefId])
+}
+
+enum WatchFrequency {
+  DAILY
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+}
+
+// =============================================================================
+// IB-02: Competitive Intelligence
+// =============================================================================
+
+model Competitor {
+  id          String   @id @default(cuid())
+  userId      String
+  name        String
+  website     String?
+  industry    String?
+  description String?
+  tags        String[]
+  isActive    Boolean  @default(true)
+  lastCheckedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user     User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mentions CompetitorMention[]
+
+  @@index([userId])
+  @@index([isActive])
+}
+
+model CompetitorMention {
+  id           String        @id @default(cuid())
+  competitorId String
+  type         MentionType
+  title        String
+  content      String
+  sourceUrl    String?
+  sourceName   String?
+  sentiment    MentionSentiment @default(NEUTRAL)
+  importance   Int              @default(1) // 1-5 scale
+  detectedAt   DateTime         @default(now())
+
+  competitor Competitor @relation(fields: [competitorId], references: [id], onDelete: Cascade)
+
+  @@index([competitorId])
+  @@index([detectedAt])
+  @@index([type])
+}
+
+enum MentionType {
+  PRODUCT_LAUNCH
+  PRICING_CHANGE
+  PARTNERSHIP
+  HIRING
+  FUNDING
+  NEWS
+  SOCIAL_MEDIA
+  OTHER
+}
+
+enum MentionSentiment {
+  POSITIVE
+  NEGATIVE
+  NEUTRAL
+}
+
+// =============================================================================
+// IB-04: Brief Templates
+// =============================================================================
+
+model BriefTemplate {
+  id          String       @id @default(cuid())
+  userId      String
+  name        String
+  type        TemplateType
+  description String?
+  sections    Json         // Array of { key: string, label: string, prompt: string, order: number }
+  isDefault   Boolean      @default(false)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([type])
+}
+
+enum TemplateType {
+  PRE_MEETING
+  INVESTOR
+  COMPETITOR
+  HIRING_MANAGER
+  CUSTOM
+}
+
+// =============================================================================
+// IB-05: Source Quality Scoring
+// =============================================================================
+
+model SourceScore {
+  id               String   @id @default(cuid())
+  userId           String
+  domain           String   // e.g. "arxiv.org", "bbc.com", "reddit.com"
+  credibilityScore Float    // 0.0-1.0
+  category         String   // academic, government, established_media, blog, forum, social
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, domain])
+  @@index([userId])
+  @@index([domain])
+}

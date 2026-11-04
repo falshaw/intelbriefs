@@ -1,0 +1,221 @@
+# =============================================================================
+# IntelBriefs - Docker Compose Configuration
+# =============================================================================
+# Port Allocation: App 3006, PostgreSQL 5438, Redis 6385
+# Network: 172.30.71.0/24
+# =============================================================================
+
+services:
+  intelbriefs-app:
+    container_name: intelbriefs-app
+    build: .
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=100m
+      - /app/.next/cache:size=200m
+    ports:
+      - "127.0.0.1:3006:3000"
+    environment:
+      - NODE_ENV=production
+      - HOSTNAME=0.0.0.0
+      # Database - least-privilege app user (init-app-user.sh creates intelbriefs_app on first run)
+      # NOTE: Existing volumes need: docker exec intelbriefs-postgres psql -U intelbriefs -c "CREATE ROLE intelbriefs_app WITH LOGIN PASSWORD 'newpass'; GRANT CONNECT ON DATABASE intelbriefs_db TO intelbriefs_app; GRANT USAGE ON SCHEMA public TO intelbriefs_app; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO intelbriefs_app; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO intelbriefs_app;"
+      - DATABASE_URL=postgresql://intelbriefs_app:${INTELBRIEFS_APP_PASSWORD:?INTELBRIEFS_APP_PASSWORD required in .env}@intelbriefs-postgres:5432/intelbriefs_db
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD required in .env}@intelbriefs-redis:6379
+      - AUTH_SECRET=${AUTH_SECRET:?AUTH_SECRET required in .env}
+      - NEXTAUTH_SECRET=${AUTH_SECRET}
+      - NEXTAUTH_URL=http://localhost:3006
+      - AUTH_TRUST_HOST=true
+      # Ollama on the host
+      - OLLAMA_HOST=http://host.docker.internal:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:7b}
+      # LLM provider: "ollama" (default) or "claude" (optional host-side gateway)
+      - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
+      - CLAUDE_BRIDGE_URL=${CLAUDE_BRIDGE_URL:-http://host.docker.internal:7777}
+      - CLAUDE_MODEL=${CLAUDE_MODEL:-opus}
+      - CLAUDE_BRIDGE_TOKEN=${CLAUDE_BRIDGE_TOKEN:-} # shared token for the gateway
+      # Research APIs
+      - TAVILY_API_KEY=${TAVILY_API_KEY:-}
+      - EXA_API_KEY=${EXA_API_KEY:-}
+      # Encryption
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:?ENCRYPTION_KEY required in .env}
+      # CRM integration (optional; empty = off)
+      - CRM_API_URL=${CRM_API_URL:-}
+      - CRM_API_KEY=${CRM_API_KEY:-}
+      # Scheduled watchlist runs (intelbriefs-cron below); routes refuse to run without it
+      - CRON_SECRET=${CRON_SECRET:?CRON_SECRET required in .env}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      intelbriefs-postgres:
+        condition: service_healthy
+      intelbriefs-redis:
+        condition: service_healthy
+    networks:
+      - intelbriefs-network
+    restart: "no"
+    stop_grace_period: 30s
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "-O",
+          "/dev/null",
+          "http://127.0.0.1:3000/api/health",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1"
+          pids: 200
+        reservations:
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
+
+  # Calls the watchlist cron route every 15 min (items run when their nextRunAt is due).
+  intelbriefs-cron:
+    container_name: intelbriefs-cron
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    command:
+      - sh
+      - -c
+      - 'sleep 60; while true; do wget -q -O /dev/null --header "x-cron-secret: $$CRON_SECRET" http://intelbriefs-app:3000/api/cron/watchlist || echo "watchlist cron call failed"; sleep 900; done'
+    environment:
+      - CRON_SECRET=${CRON_SECRET:?CRON_SECRET required in .env}
+    depends_on:
+      intelbriefs-app:
+        condition: service_healthy
+    user: "65534:65534"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - intelbriefs-network
+    restart: "no"
+    deploy:
+      resources:
+        limits:
+          memory: 32M
+          cpus: "0.1"
+          pids: 20
+
+  intelbriefs-postgres:
+    container_name: intelbriefs-postgres
+    image: postgres:16.15-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - FOWNER
+      - DAC_OVERRIDE
+    environment:
+      - POSTGRES_USER=intelbriefs
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required in .env}
+      - POSTGRES_DB=intelbriefs_db
+      - INTELBRIEFS_APP_PASSWORD=${INTELBRIEFS_APP_PASSWORD:?INTELBRIEFS_APP_PASSWORD required in .env}
+    volumes:
+      - intelbriefs_postgres:/var/lib/postgresql/data
+      - ./postgres/init-app-user.sh:/docker-entrypoint-initdb.d/02-init-app-user.sh:ro
+    ports:
+      - "127.0.0.1:5438:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U intelbriefs -d intelbriefs_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - intelbriefs-network
+    restart: "no"
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+          pids: 200
+        reservations:
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+        compress: "true"
+
+  intelbriefs-redis:
+    container_name: intelbriefs-redis
+    image: redis:8.10.0-alpine@sha256:978f0e01593e65eed801f2402944efcd936d43b5027e4908a7897baf88ed6241
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD required in .env}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required in .env}
+    ports:
+      - "127.0.0.1:6385:6379"
+    volumes:
+      - intelbriefs_redis:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - intelbriefs-network
+    restart: "no"
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+          pids: 200
+        reservations:
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+        compress: "true"
+
+volumes:
+  intelbriefs_postgres:
+  intelbriefs_redis:
+
+networks:
+  intelbriefs-network:
+    name: intelbriefs-network
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.71.0/24

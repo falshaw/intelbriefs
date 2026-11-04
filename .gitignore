@@ -1,0 +1,14 @@
+node_modules/
+.next/
+.env
+.env.*
+!.env.example
+*.tsbuildinfo
+coverage/
+*.log
+/briefs/
+
+# assistant notes (kept local)
+CLAUDE.md
+AGENTS.md
+.claude/
