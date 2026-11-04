@@ -404,7 +404,7 @@ export default function BriefView({ brief: initialBrief }: { brief: Brief }) {
           Raw Data
         </button>
         {rawOpen && (
-          <pre className="mt-3 text-xs text-ink-45 overflow-auto max-h-96 p-3 bg-dark/80 rounded-lg">
+          <pre className="mt-3 text-xs text-[#d6deec] overflow-auto max-h-96 p-3 bg-dark rounded-lg">
             {JSON.stringify(
               {
                 webFindings: brief.webFindings,
