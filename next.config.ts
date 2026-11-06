@@ -20,7 +20,7 @@ const nextConfig: NextConfig = {
             value: "max-age=31536000; includeSubDomains",
           },
           {
-            // TODO: migrate to nonce-based CSP (see secsuite/src/middleware.ts).
+            // TODO: migrate to a nonce-based CSP set per request in middleware.
             // 'unsafe-inline' is required here because this is an output:"standalone"
             // Next.js app that injects inline bootstrap/hydration <script> tags at
             // runtime; dropping it without per-request nonces breaks hydration.
